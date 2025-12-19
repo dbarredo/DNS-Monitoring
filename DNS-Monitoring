@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+import subprocess
+import ipaddress
+import os
+import requests
+from datetime import datetime
+
+HOST = "<  >" #Put the Domain
+STATE_FILE = "< >"  #Create a txt file and put the directory example: /usr/local/bin/last_ips.txt 
+WEBHOOK_URL = "< >"  # webhookURL
+
+
+def validate_ip(s: str) -> bool:
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
+
+
+def get_ips(host: str):
+    """Run nslookup and extract valid IPs."""
+    result = subprocess.run(["nslookup", host],
+                            capture_output=True, text=True)
+    lines = result.stdout.splitlines()
+    ips = []
+    for line in lines:
+        if "Address:" in line and "#" not in line:
+            ip = line.split("Address:")[-1].strip()
+            if validate_ip(ip):
+                ips.append(ip)
+    return sorted(set(ips))
+
+
+def load_last_ips():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return sorted(set(f.read().splitlines()))
+    return []
+
+
+def save_current_ips(ips):
+    with open(STATE_FILE, "w") as f:
+        f.write("\n".join(sorted(set(ips))))
+
+
+def send_to_google_chat(message: str):
+    payload = {"text": message}
+    try:
+        r = requests.post(WEBHOOK_URL, json=payload)
+        if r.status_code != 200:
+            print(f"❌ Failed to send to Google Chat: {r.text}")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+
+def main():
+    current_ips = get_ips(HOST)
+    last_ips = load_last_ips()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if not current_ips:
+        msg = f"❌ No IPs found for {HOST} at {timestamp}"
+        print(msg)
+        send_to_google_chat(msg)
+        return
+
+    if not last_ips:
+        # First run, initialize state file only
+        save_current_ips(current_ips)
+        msg = f"📥 First run ({timestamp}): stored IPs for {HOST}: {', '.join(current_ips)}"
+        print(msg)
+        return
+
+    if set(current_ips) == set(last_ips):
+        # absolutely no change, do nothing
+        print(f"✅ No change for {HOST} at {timestamp}. Current IPs: {', '.join(current_ips)}")
+        return
+
+    # Something changed
+    new_ips = set(current_ips) - set(last_ips)
+    removed_ips = set(last_ips) - set(current_ips)
+
+    msg_lines = [
+        f"🔔 DNS Change detected for {HOST} at {timestamp}!",
+        f"🪪 Old IPs: {', '.join(last_ips)}",
+        f"🆕 New IPs: {', '.join(current_ips)}"
+    ]
+    msg = "\n".join(msg_lines)
+    print(msg)
+    send_to_google_chat(msg)
+
+    save_current_ips(current_ips)
+
+
+if __name__ == "__main__":
+    main()
